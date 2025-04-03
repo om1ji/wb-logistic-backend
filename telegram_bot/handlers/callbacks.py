@@ -157,7 +157,8 @@ async def select_truck(callback: CallbackQuery):
         driver = next((d for d in await get_drivers() if str(d["id"]) == driver_id), None)
         truck = next((t for t in await get_trucks() if str(t["id"]) == truck_id), None)
 
-        confirmation_text = "Подтвердите выбор:\n"
+        confirmation_text = ""
+        
         if driver:
             confirmation_text += f"\n👨‍✈️ Водитель: {driver['full_name']}"
         if truck:
@@ -165,7 +166,7 @@ async def select_truck(callback: CallbackQuery):
 
         # Обновляем сообщение
         await callback.message.edit_text(
-            text=confirmation_text,
+            text=callback.message.text + "\n\n" + confirmation_text,
             reply_markup=keyboard
         )
         await callback.answer()
@@ -191,11 +192,8 @@ async def confirm_selection(callback: CallbackQuery):
 
         if response.status_code == 200:
             result = response.json()
-            # Обновляем сообщение с информацией о принятом заказе
             await callback.message.edit_text(
-                text=f"✅ Заказ успешно принят\n\n"
-                     f"👨‍✈️ Водитель: {result['driver']['full_name']}\n"
-                     f"🚛 Транспорт: {result['truck']['brand']} {result['truck']['truck_model']} - {result['truck']['plate_number']}",
+                text=callback.message.text + "\n\n" + f"✅ Заказ успешно принят\n\n",
                 reply_markup=None
             )
         else:

@@ -171,17 +171,34 @@ class OrderViewSet(viewsets.ModelViewSet):
             telegram_data = {
                 "order_id": str(order.id),
                 "sequence_number": order.sequence_number,
-                "warehouse_name": str(order.warehouse),
+                "warehouse_name": str(order.warehouse) if order.warehouse else "Не указан",
                 "cargo_type": order.cargo_type,
-                "box_size": order.container_type,  # Для обратной совместимости
-                "container_type": order.container_type,
                 "box_count": order.box_count,
                 "pallet_count": order.pallet_count,
                 "company_name": order.company,
                 "client_name": order.client_name,
+                "client_email": order.email,
                 "client_phone": order.phone_number,
+                "telegram_user_id": client_data.get("telegram_user_id"),
                 "cost": str(order.total_price),
                 "pickup_address": order.pickup_address or "Не указан",
+                "comments": client_data.get("comments", "Нет комментариев"),
+                "cargo_info": {
+                    "boxes": {
+                        "count": order.box_count,
+                        "container_type": cargo_data.get("box_container_type", ""),
+                        "dimensions": {
+                            "length": str(order.length) if order.length else "",
+                            "width": str(order.width) if order.width else "",
+                            "height": str(order.height) if order.height else ""
+                        }
+                    },
+                    "pallets": {
+                        "count": order.pallet_count,
+                        "container_type": cargo_data.get("pallet_container_type", ""),
+                        "weight": str(order.weight) if order.weight else ""
+                    }
+                },
                 "additional_services": [
                     {
                         "name": str(service),
@@ -410,21 +427,21 @@ class PricingViewSet(viewsets.ModelViewSet):
         try:
             # Извлекаем данные
             delivery_data = request.data.get("delivery", {})
-            cargo_type_data = request.data.get("cargo", {})
-            additional_services = request.data.get("additionalServices", [])
+            cargo_data = request.data.get("cargo", {})
+            # Проверяем оба возможных ключа для дополнительных услуг
+            additional_services = request.data.get("additionalServices", []) or request.data.get("additional_services", [])
 
             # Log the received data for debugging
             logger.info(f"Received price calculation request: {request.data}")
-            logger.info(f"Extracted cargo data: {cargo_type_data}")
+            logger.info(f"Extracted cargo data: {cargo_data}")
+            logger.info(f"Extracted additional services: {additional_services}")
 
             total_price = Decimal("0.00")
 
             # 1. Расчет стоимости доставки
             delivery_price = Decimal("0.00")
             if delivery_data:
-                warehouse_id = delivery_data.get("warehouse_id") or delivery_data.get(
-                    "warehouse"
-                )
+                warehouse_id = delivery_data.get("warehouse_id")
                 if warehouse_id:
                     try:
                         # Ищем тариф доставки для выбранного склада
@@ -434,181 +451,159 @@ class PricingViewSet(viewsets.ModelViewSet):
                             is_active=True,
                         ).first()
 
-                        # If no pricing found for specific warehouse, use any delivery pricing
-                        if not delivery_pricing:
-                            delivery_pricing = Pricing.objects.filter(
-                                pricing_type="delivery", is_active=True
-                            ).first()
-                            logger.info(
-                                f"No specific delivery pricing found for warehouse {warehouse_id}, using first available"
-                            )
-
                         if delivery_pricing:
                             delivery_price = delivery_pricing.base_price
                             total_price += delivery_price
                             logger.info(
                                 f"Added delivery price: {delivery_price} using pricing {delivery_pricing.id}"
                             )
-                        else:
-                            total_price += delivery_price
                     except Exception as e:
                         logger.error(f"Error calculating delivery price: {str(e)}")
-                        total_price += delivery_price
 
             # 2. Расчет стоимости по типу груза
-            if cargo_type_data:
-                # Determine cargo type and counts
-                cargo_type = cargo_type_data.get("cargo_type", "")
-                box_count = int(cargo_type_data.get("box_count", 0))
-                pallet_count = int(cargo_type_data.get("pallet_count", 0))
-                container_type = cargo_type_data.get("container_type", "")
-
-                logger.info(
-                    f"Processing cargo: type={cargo_type}, box_count={box_count}, pallet_count={pallet_count}"
-                )
-
-                # Process boxes
-                if box_count > 0:
-                    box_price = None
-                    
-                    if container_type == "Другой размер":
-                        try:
-                            # Получаем размеры из поля dimensions
-                            dimensions = cargo_type_data.get("dimensions", {})
-                            length = float(dimensions.get("length", 0))
-                            width = float(dimensions.get("width", 0))
-                            height = float(dimensions.get("height", 0))
-                            
-                            # Проверяем, что все размеры больше 0
-                            if length > 0 and width > 0 and height > 0:
-                                # Определяем диапазон объема
-                                volume_range = BoxPricing.calculate_volume(length, width, height)
-                                print(volume_range)
-                                
-                                # Ищем цену для данного диапазона объема
-                                box_pricing = BoxPricing.objects.filter(
-                                    size_category="Другой размер",
-                                    volume_range=volume_range,
-                                    is_active=True
-                                ).first()
-                                
-                                if box_pricing:
-                                    box_price = box_pricing.price
-                                    logger.info(f"Using box price from BoxPricing: {box_price} for volume range {volume_range}")
-                                else:
-                                    # Если не нашли цену в БД, используем значения по умолчанию
-                                    default_prices = BoxPricing.get_default_prices()
-                                    box_price = Decimal(str(default_prices.get(volume_range, "450.00")))
-                                    logger.info(f"Using default box price: {box_price} for volume range {volume_range}")
-                            else:
-                                # Если какой-то из размеров равен 0, используем минимальную цену
-                                box_price = Decimal("450.00")
-                                logger.warning("One or more dimensions are 0, using minimum price")
-                        except Exception as e:
-                            # В случае ошибки используем минимальную цену
-                            box_price = Decimal("450.00")
-                            logger.error(f"Error calculating custom box price: {e}")
-                    else:
-                        # Для стандартного размера ищем цену в БД
-                        box_pricing = BoxPricing.objects.filter(
-                            size_category=container_type,
-                            is_active=True
-                        ).first()
+            cargo_price = Decimal("0.00")
+            
+            # Обработка коробок
+            box_count = int(cargo_data.get("box_count", 0))
+            if box_count > 0:
+                box_container_type = cargo_data.get("box_container_type", "")
+                box_price = None
+                
+                if box_container_type == "Другой размер":
+                    try:
+                        # Получаем размеры из поля dimensions
+                        dimensions = cargo_data.get("dimensions", {})
+                        length = float(dimensions.get("length", 0))
+                        width = float(dimensions.get("width", 0))
+                        height = float(dimensions.get("height", 0))
                         
-                        if box_pricing:
-                            box_price = box_pricing.price
-                            logger.info(f"Using box price from BoxPricing: {box_price} for size {container_type}")
-                        else:
-                            # Если не нашли цену в БД, используем значения по умолчанию
-                            default_prices = BoxPricing.get_default_prices()
-                            box_price = Decimal(str(default_prices.get(container_type, "450.00")))
-                            logger.info(f"Using default box price: {box_price} for size {container_type}")
-                    
-                    box_cost = box_price * Decimal(box_count)
-                    total_price += box_cost
-                    logger.info(f"Added box price: {box_cost} for {box_count} boxes at {box_price} each")
-
-                # Process pallets
-                if pallet_count > 0:
-                    pallet_price = None
-                    
-                    if container_type:
-                        try:
-                            if container_type == "Другой вес":
-                                # Получаем вес из dimensions
-                                dimensions = cargo_type_data.get("dimensions", {})
-                                weight = float(dimensions.get("weight", 0))
-                                
-                                if weight > 0:
-                                    if weight <= 500:
-                                        # Если вес до 500 кг, используем стандартную цену
-                                        pallet_price = Decimal("5000.00")
-                                    else:
-                                        # Для веса больше 500 кг считаем дополнительную стоимость
-                                        # За каждые 100 кг свыше 500 кг добавляем 1000 рублей
-                                        extra_weight = weight - 500  # Излишек веса
-                                        extra_hundreds = (extra_weight + 99) // 100  # Округляем вверх до сотен
-                                        extra_cost = extra_hundreds * 1000  # 1000 руб. за каждые 100 кг
-                                        pallet_price = Decimal("5000.00") + Decimal(str(extra_cost))
-                                        logger.info(f"Calculated custom weight price: base 5000 + {extra_cost} for {extra_weight}kg over 500kg")
-                                else:
-                                    # Если вес не указан или равен 0, используем минимальную цену
-                                    pallet_price = Decimal("2000.00")
-                                    logger.warning("Weight is 0 or not specified, using minimum price")
+                        # Проверяем, что все размеры больше 0
+                        if length > 0 and width > 0 and height > 0:
+                            # Определяем диапазон объема
+                            volume_range = BoxPricing.calculate_volume(length, width, height)
+                            
+                            # Ищем цену для данного диапазона объема
+                            box_pricing = BoxPricing.objects.filter(
+                                size_category="Другой размер",
+                                volume_range=volume_range,
+                                is_active=True
+                            ).first()
+                            
+                            if box_pricing:
+                                box_price = box_pricing.price
+                                logger.info(f"Using box price from BoxPricing: {box_price} for volume range {volume_range}")
                             else:
-                                # Для стандартных весовых категорий ищем цену в БД
-                                pallet_pricing = PalletPricing.objects.filter(
-                                    weight_category=container_type,
-                                    is_active=True
-                                ).first()
-                                
-                                if pallet_pricing:
-                                    pallet_price = pallet_pricing.price
-                                    logger.info(f"Using pallet price from PalletPricing: {pallet_price} for category {container_type}")
-                                else:
-                                    # Если не нашли, используем стандартные цены
-                                    default_prices = PalletPricing.get_default_prices()
-                                    pallet_price = Decimal(str(default_prices.get(container_type, "2000.00")))
-                                    logger.info(f"Using default pallet price: {pallet_price} for category {container_type}")
-                        except Exception as e:
-                            # В случае ошибки используем минимальную цену
-                            pallet_price = Decimal("2000.00")
-                            logger.error(f"Error getting pallet price: {e}")
-                    else:
-                        # Если тип не указан, используем минимальную цену
-                        pallet_price = Decimal("2000.00")
-                        logger.info(f"Using minimum pallet price: {pallet_price}")
+                                # Если не нашли цену в БД, используем значения по умолчанию
+                                default_prices = BoxPricing.get_default_prices()
+                                box_price = Decimal(str(default_prices.get(volume_range, "450.00")))
+                                logger.info(f"Using default box price: {box_price} for volume range {volume_range}")
+                        else:
+                            # Если какой-то из размеров равен 0, используем минимальную цену
+                            box_price = Decimal("450.00")
+                            logger.warning("One or more dimensions are 0, using minimum price")
+                    except Exception as e:
+                        # В случае ошибки используем минимальную цену
+                        box_price = Decimal("450.00")
+                        logger.error(f"Error calculating custom box price: {e}")
+                else:
+                    # Для стандартного размера ищем цену в БД
+                    box_pricing = BoxPricing.objects.filter(
+                        size_category=box_container_type,
+                        is_active=True
+                    ).first()
                     
-                    pallet_cost = pallet_price * Decimal(pallet_count)
-                    total_price += pallet_cost
-                    logger.info(f"Added pallet price: {pallet_cost} for {pallet_count} pallets at {pallet_price} each")
+                    if box_pricing:
+                        box_price = box_pricing.price
+                        logger.info(f"Using box price from BoxPricing: {box_price} for size {box_container_type}")
+                    else:
+                        # Если не нашли цену в БД, используем значения по умолчанию
+                        default_prices = BoxPricing.get_default_prices()
+                        box_price = Decimal(str(default_prices.get(box_container_type, "450.00")))
+                        logger.info(f"Using default box price: {box_price} for size {box_container_type}")
+                
+                box_cost = box_price * Decimal(box_count)
+                cargo_price += box_cost
+                logger.info(f"Added box price: {box_cost} for {box_count} boxes at {box_price} each")
+
+            # Обработка паллет
+            pallet_count = int(cargo_data.get("pallet_count", 0))
+            if pallet_count > 0:
+                pallet_container_type = cargo_data.get("pallet_container_type", "")
+                pallet_price = None
+                
+                if pallet_container_type == "Другой вес":
+                    try:
+                        # Получаем вес из dimensions
+                        dimensions = cargo_data.get("dimensions", {})
+                        weight = float(dimensions.get("weight", 0))
+                        
+                        if weight > 0:
+                            if weight <= 500:
+                                # Если вес до 500 кг, используем стандартную цену
+                                pallet_price = Decimal("5000.00")
+                            else:
+                                # Для веса больше 500 кг считаем дополнительную стоимость
+                                # За каждые 100 кг свыше 500 кг добавляем 1000 рублей
+                                extra_weight = weight - 500  # Излишек веса
+                                extra_hundreds = (extra_weight + 99) // 100  # Округляем вверх до сотен
+                                extra_cost = extra_hundreds * 1000  # 1000 руб. за каждые 100 кг
+                                pallet_price = Decimal("5000.00") + Decimal(str(extra_cost))
+                                logger.info(f"Calculated custom weight price: base 5000 + {extra_cost} for {extra_weight}kg over 500kg")
+                        else:
+                            # Если вес не указан или равен 0, используем минимальную цену
+                            pallet_price = Decimal("2000.00")
+                            logger.warning("Weight is 0 or not specified, using minimum price")
+                    except Exception as e:
+                        # В случае ошибки используем минимальную цену
+                        pallet_price = Decimal("2000.00")
+                        logger.error(f"Error calculating custom pallet price: {e}")
+                else:
+                    # Для стандартных весовых категорий ищем цену в БД
+                    pallet_pricing = PalletPricing.objects.filter(
+                        weight_category=pallet_container_type,
+                        is_active=True
+                    ).first()
+                    
+                    if pallet_pricing:
+                        pallet_price = pallet_pricing.price
+                        logger.info(f"Using pallet price from PalletPricing: {pallet_price} for category {pallet_container_type}")
+                    else:
+                        # Если не нашли, используем стандартные цены
+                        default_prices = PalletPricing.get_default_prices()
+                        pallet_price = Decimal(str(default_prices.get(pallet_container_type, "2000.00")))
+                        logger.info(f"Using default pallet price: {pallet_price} for category {pallet_container_type}")
+                
+                pallet_cost = pallet_price * Decimal(pallet_count)
+                cargo_price += pallet_cost
+                logger.info(f"Added pallet price: {pallet_cost} for {pallet_count} pallets at {pallet_price} each")
+
+            total_price += cargo_price
 
             # 3. Расчет стоимости дополнительных услуг
             additional_services_cost = Decimal("0.00")
-            for service_id in additional_services:
-                try:
-                    service = AdditionalService.objects.filter(
-                        id=service_id, is_active=True
-                    ).first()
-                    if service:
+            if additional_services:
+                logger.info(f"Processing additional services: {additional_services}")
+                for service_id in additional_services:
+                    try:
+                        service = AdditionalService.objects.get(id=service_id, is_active=True)
                         additional_services_cost += service.price
                         logger.info(
-                            f"Added additional service price: {service.price} for {service.name}"
+                            f"Added additional service price: {service.price} for {service.name} (ID: {service_id})"
                         )
-                except Exception as e:
-                    logger.error(
-                        f"Error processing additional service {service_id}: {str(e)}"
-                    )
+                    except AdditionalService.DoesNotExist:
+                        logger.warning(f"Additional service {service_id} not found")
+                    except Exception as e:
+                        logger.error(
+                            f"Error processing additional service {service_id}: {str(e)}"
+                        )
 
             total_price += additional_services_cost
+            logger.info(f"Total additional services cost: {additional_services_cost}")
 
             # Округляем до 2 знаков после запятой
             total_price = total_price.quantize(Decimal("0.01"))
 
             logger.info(f"Final calculated price: {total_price}")
-
-            # Prepare pricing details
-            cargo_price = total_price - delivery_price - additional_services_cost
 
             return Response(
                 {
@@ -832,8 +827,6 @@ def create_order(request):
             "sequence_number": order.sequence_number,
             "warehouse_name": str(order.warehouse) if order.warehouse else "Не указан",
             "cargo_type": order.cargo_type,
-            "box_size": order.container_type,  # Для обратной совместимости
-            "container_type": order.container_type,
             "box_count": order.box_count,
             "pallet_count": order.pallet_count,
             "company_name": order.company,
@@ -844,6 +837,22 @@ def create_order(request):
             "cost": str(order.total_price),
             "pickup_address": order.pickup_address or "Не указан",
             "comments": client_data.get("comments", "Нет комментариев"),
+            "cargo_info": {
+                "boxes": {
+                    "count": order.box_count,
+                    "container_type": cargo_data.get("box_container_type", ""),
+                    "dimensions": {
+                        "length": str(order.length) if order.length else "",
+                        "width": str(order.width) if order.width else "",
+                        "height": str(order.height) if order.height else ""
+                    }
+                },
+                "pallets": {
+                    "count": order.pallet_count,
+                    "container_type": cargo_data.get("pallet_container_type", ""),
+                    "weight": str(order.weight) if order.weight else ""
+                }
+            },
             "additional_services": [
                 {
                     "name": str(service),

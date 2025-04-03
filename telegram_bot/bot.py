@@ -29,37 +29,121 @@ dp.include_router(commands.router)
 
 app = FastAPI()
 
+data = {
+    "delivery": {
+        "warehouse_id": 1,
+        "marketplace": 1
+    },
+    "cargo": {
+        "cargo_type": "pallet",
+        "container_type": "200-300 кг",
+        "box_count": 2,
+        "pallet_count": 4,
+        "dimensions": {
+            "length": "",
+            "width": "",
+            "height": "",
+            "weight": ""
+        }
+    },
+    "client": {
+        "name": "Амаль",
+        "phone": "+79273284327",
+        "company": "ИП Амаль",
+        "email": ""
+    },
+    "additional_services": [
+        1
+    ],
+    "pickup_address": "Проспект Победы 89"
+}
+
+data2 = {
+    "delivery": {
+        "warehouse_id": 1,
+        "marketplace": 1
+    },
+    "cargo": {
+        "cargo_type": "pallet",
+        "container_type": "0-200 кг",
+        "box_count": 0,
+        "pallet_count": 1,
+        "dimensions": {
+            "length": "",
+            "width": "",
+            "height": "",
+            "weight": ""
+        }
+    },
+    "client": {
+        "name": "Амаль",
+        "phone": "+79083363804",
+        "company": "ИП Амаль",
+        "email": ""
+    },
+    "additional_services": [],
+    "pickup_address": ""
+}
 
 def message_builder(order_data: Dict) -> Dict[str, Union[str, InlineKeyboardMarkup]]:
     """
     Builds a message for Telegram notification with inline keyboard
     """
+    print(order_data)
     try:
-        # Формируем основной текст сообщения
         message_parts = []
         
-        # Заголовок с номером заказа
         message_parts.append(f"📦 Новый заказ #{order_data.get('sequence_number', 'N/A')}")
         
-        # Информация о складе
         if warehouse := order_data.get('warehouse_name'):
             message_parts.append(f"\n🏭 Склад: {warehouse}")
 
-        # Информация о грузе
+        # Добавляем информацию о грузе
         cargo_info = []
-        if order_data.get('cargo_type') == 'boxes':
-            if box_size := order_data.get('container_type'):
-                cargo_info.append(f"📏 Размер коробки: {box_size}")
-            if box_count := order_data.get('box_quantity'):
-                cargo_info.append(f"📦 Количество коробок: {box_count}")
-        elif order_data.get('cargo_type') == 'pallets':
-            if pallet_count := order_data.get('pallet_quantity'):
-                cargo_info.append(f"🔧 Количество паллет: {pallet_count}")
-
+        
+        # Получаем информацию о грузе из новой структуры
+        cargo_data = order_data.get('cargo_info', {})
+        
+        # Обрабатываем коробки
+        boxes = cargo_data.get('boxes', {})
+        box_count = boxes.get('count')
+        if box_count and int(box_count) > 0:
+            cargo_info.append(f"📦 Коробки:")
+            cargo_info.append(f"• Количество: {box_count}")
+            
+            # Если выбран стандартный размер
+            box_type = boxes.get('container_type')
+            if box_type and box_type != "Другой размер":
+                cargo_info.append(f"• Размер: {box_type}")
+            # Если выбран кастомный размер, показываем размеры
+            else:
+                dimensions = boxes.get('dimensions', {})
+                length = dimensions.get('length')
+                width = dimensions.get('width')
+                height = dimensions.get('height')
+                if length and width and height:
+                    cargo_info.append(f"• Размеры (Д×Ш×В): {length}×{width}×{height} см")
+                
+        # Обрабатываем паллеты
+        pallets = cargo_data.get('pallets', {})
+        pallet_count = pallets.get('count')
+        if pallet_count and int(pallet_count) > 0:
+            cargo_info.append(f"🔧 Паллеты:")
+            cargo_info.append(f"• Количество: {pallet_count}")
+            
+            # Если выбрана стандартная категория веса
+            pallet_type = pallets.get('container_type')
+            if pallet_type and pallet_type != "Другой вес":
+                cargo_info.append(f"• Категория веса: {pallet_type}")
+            # Если выбран кастомный вес, показываем его
+            else:
+                if weight := pallets.get('weight'):
+                    cargo_info.append(f"• Вес: {weight} кг")
+        
+        # Если есть информация о грузе, добавляем её в сообщение
         if cargo_info:
-            message_parts.append("\n📦 Информация о грузе:\n" + "\n".join(cargo_info))
+            message_parts.append("\n" + "\n".join(cargo_info))
 
-        # Дополнительные услуги
         if services := order_data.get('additional_services', []):
             services_info = []
             for service in services:
@@ -69,33 +153,24 @@ def message_builder(order_data: Dict) -> Dict[str, Union[str, InlineKeyboardMark
             if services_info:
                 message_parts.append("\n🛠 Дополнительные услуги:\n" + "\n".join(services_info))
 
-        # Информация о компании
         company_info = []
         if company := order_data.get('company_name'):
             company_info.append(f"🏢 Компания: {company}")
-        if contact := order_data.get('contact_name'):
+        if contact := order_data.get('client_name'):
             company_info.append(f"👤 Контактное лицо: {contact}")
-        if phone := order_data.get('contact_phone'):
+        if phone := order_data.get('client_phone'):
             company_info.append(f"📱 Телефон: {phone}")
 
         if company_info:
             message_parts.append("\n" + "\n".join(company_info))
 
-        # Адрес забора груза
-        if pickup_address := order_data.get('pickup_address'):
+        pickup_address = order_data.get('pickup_address')
+        if pickup_address != "" and pickup_address != "Не указан":
             message_parts.append(f"\n📍 Адрес забора груза:\n{pickup_address}")
 
-        # Общая стоимость
-        if total_cost := order_data.get('total_cost'):
+        if total_cost := order_data.get('cost'):
             message_parts.append(f"\n💰 Стоимость: {total_cost} ₽")
 
-        # Комментарии
-        if comments := order_data.get('comments'):
-            message_parts.append(f"\n💭 Комментарии:\n{comments}")
-
-        print(order_data.get('order_id'))
-
-        # Создаем клавиатуру с кнопками
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -145,7 +220,6 @@ async def send_notification(chat_id: Union[str, int], order_data: Dict) -> None:
         logger.error(f"Error sending notification: {e}")
 
 
-# Эндпоинт для приема уведомлений
 @app.post("/api/send_notification")
 async def send_notification_endpoint(request: Request):
     try:
@@ -157,12 +231,9 @@ async def send_notification_endpoint(request: Request):
         return {"status": "error", "message": str(e)}
 
 
-# Запуск FastAPI сервера вместе с ботом
 async def main() -> None:
-    # Запускаем бота
     bot_task = asyncio.create_task(dp.start_polling(bot))
 
-    # Запускаем FastAPI сервер
     config = uvicorn.Config(app, host="0.0.0.0", port=8080)
     server = uvicorn.Server(config)
     await server.serve()
