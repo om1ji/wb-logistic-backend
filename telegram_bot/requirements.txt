@@ -1,0 +1,7 @@
+fastapi==0.115.10
+uvicorn==0.34.0
+grpcio==1.70.0
+grpcio-tools==1.70.0
+python-dotenv==1.0.1
+requests==2.32.3
+aiogram==3.18.0
