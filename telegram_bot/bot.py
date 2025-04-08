@@ -18,8 +18,21 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
-group = os.getenv("TELEGRAM_GROUP_ID")
+# Загрузка переменных окружения
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
+WB_BACKEND_URL = os.getenv("WB_BACKEND_URL", "http://localhost:8000")
+
+# Проверка наличия обязательных переменных
+if not TELEGRAM_BOT_TOKEN:
+    logger.error("TELEGRAM_BOT_TOKEN not set")
+    exit(1)
+if not TELEGRAM_GROUP_ID:
+    logger.error("TELEGRAM_GROUP_ID not set")
+    exit(1)
+
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+group = TELEGRAM_GROUP_ID
 dp = Dispatcher()
 
 callbacks_router.bot = bot
@@ -177,16 +190,23 @@ async def send_notification_endpoint(request: Request):
 
 async def main() -> None:
     try:
+        # Выводим информацию о настройках
+        logger.info(f"Starting Telegram bot with group ID: {group}")
+        logger.info(f"WB_BACKEND_URL: {WB_BACKEND_URL}")
+        
+        # Запускаем бота и сервер в отдельных задачах
         bot_task = asyncio.create_task(dp.start_polling(bot))
         
         config = uvicorn.Config(app, host="0.0.0.0", port=8080)
         server = uvicorn.Server(config)
         server_task = asyncio.create_task(server.serve())
         
+        # Ждем завершения любой из задач или сигнала прерывания
         await asyncio.gather(bot_task, server_task)
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Stopping bot and server...")
     finally:
+        # Гарантируем, что бот корректно завершил работу
         await dp.stop_polling()
         logger.info("Bot and server stopped")
 

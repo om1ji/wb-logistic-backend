@@ -13,7 +13,8 @@ load_dotenv()
 router = Router()
 logger = logging.getLogger(__name__)
 
-API_BASE_URL = os.getenv("API_BASE_URL")
+# Используем WB_BACKEND_URL вместо API_BASE_URL
+WB_BACKEND_URL = os.getenv("WB_BACKEND_URL", "http://localhost:8000")
 
 # Переменная bot будет установлена из bot.py
 bot = None
@@ -21,9 +22,11 @@ bot = None
 # Функция для получения списка водителей
 async def get_drivers():
     try:
-        response = requests.get(f"{API_BASE_URL}/orders/transport/drivers/")
+        logger.info(f"Getting drivers from {WB_BACKEND_URL}/orders/transport/drivers/")
+        response = requests.get(f"{WB_BACKEND_URL}/orders/transport/drivers/")
         if response.status_code == 200:
             return response.json()
+        logger.warning(f"Failed to get drivers: {response.status_code} - {response.text}")
         return []
     except Exception as e:
         logger.error(f"Error getting drivers: {e}")
@@ -32,9 +35,11 @@ async def get_drivers():
 # Функция для получения списка грузовиков
 async def get_trucks():
     try:
-        response = requests.get(f"{API_BASE_URL}/orders/transport/trucks/")
+        logger.info(f"Getting trucks from {WB_BACKEND_URL}/orders/transport/trucks/")
+        response = requests.get(f"{WB_BACKEND_URL}/orders/transport/trucks/")
         if response.status_code == 200:
             return response.json()
+        logger.warning(f"Failed to get trucks: {response.status_code} - {response.text}")
         return []
     except Exception as e:
         logger.error(f"Error getting trucks: {e}")
@@ -183,7 +188,7 @@ async def confirm_selection(callback: CallbackQuery):
 
         # Отправляем запрос на бэкенд для назначения водителя и грузовика
         response = requests.post(
-            f"{API_BASE_URL}/orders/{order_id}/assign_driver/",
+            f"{WB_BACKEND_URL}/orders/{order_id}/assign_driver/",
             json={
                 "driver_id": driver_id,
                 "truck_id": truck_id
@@ -192,11 +197,13 @@ async def confirm_selection(callback: CallbackQuery):
 
         if response.status_code == 200:
             result = response.json()
+            logger.info(f"Driver and truck assigned successfully: {result}")
             await callback.message.edit_text(
                 text=callback.message.text + "\n\n" + f"✅ Заказ успешно принят\n\n",
                 reply_markup=None
             )
         else:
+            logger.error(f"Error assigning driver and truck: {response.status_code} - {response.text}")
             await callback.answer("Ошибка при назначении водителя и транспорта")
     except Exception as e:
         logger.error(f"Error in confirm_selection: {e}")
