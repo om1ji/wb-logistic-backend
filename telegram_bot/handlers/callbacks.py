@@ -13,8 +13,7 @@ load_dotenv()
 router = Router()
 logger = logging.getLogger(__name__)
 
-# Используем WB_BACKEND_URL вместо API_BASE_URL
-WB_BACKEND_URL = os.getenv("WB_BACKEND_URL", "http://localhost:8000")
+WB_BACKEND_URL = os.getenv("WB_BACKEND_URL")
 
 # Переменная bot будет установлена из bot.py
 bot = None

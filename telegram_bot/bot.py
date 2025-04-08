@@ -162,7 +162,7 @@ async def command_start_handler(message: Message) -> None:
     )
 
 
-async def send_notification(chat_id: Union[str, int], order_data: Dict) -> None:
+async def send_notification(chat_id: Union[str, int], order_data: Dict) -> bool:
     """
     Sends notification about new order to specified chat
     """
@@ -173,8 +173,38 @@ async def send_notification(chat_id: Union[str, int], order_data: Dict) -> None:
             text=message["text"],
             reply_markup=message["reply_markup"]
         )
+        return True
     except Exception as e:
         logger.error(f"Error sending notification: {e}")
+        return False
+
+
+# Создаем глобальный event loop для обработки асинхронных запросов
+notification_queue = []
+notification_processing = False
+notification_loop = None
+
+def process_notifications():
+    """Обрабатывает уведомления из очереди"""
+    global notification_processing
+    if notification_processing:
+        return
+    
+    notification_processing = True
+    
+    async def process_queue():
+        global notification_processing, notification_queue
+        while notification_queue:
+            try:
+                chat_id, data = notification_queue.pop(0)
+                success = await send_notification(chat_id, data)
+                logger.info(f"Notification sent: {success}")
+            except Exception as e:
+                logger.error(f"Error processing notification queue: {e}")
+        notification_processing = False
+    
+    # Запускаем обработку уведомлений в event loop
+    asyncio.run_coroutine_threadsafe(process_queue(), notification_loop)
 
 
 # Заменяем FastAPI-роут на Flask-роут
@@ -183,14 +213,15 @@ def send_notification_endpoint():
     try:
         order_data = request.json
         
-        # Создаем новый event loop для асинхронного вызова из синхронного кода Flask
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(send_notification(group, order_data))
+        # Добавляем уведомление в очередь
+        notification_queue.append((group, order_data))
+        
+        # Запускаем обработку уведомлений
+        process_notifications()
         
         return jsonify({"status": "success"})
     except Exception as e:
-        logging.error(f"Error sending notification: {str(e)}")
+        logging.error(f"Error queuing notification: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -200,33 +231,55 @@ def health_check():
     return jsonify({"status": "ok"})
 
 
-# Функция запуска Flask-сервера в отдельном потоке
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
-
-
 async def main() -> None:
+    global notification_loop
+    # Переменная для отслеживания завершения работы
+    shutdown_event = asyncio.Event()
+    flask_thread = None
+    
     try:
+        # Создаем event loop для уведомлений
+        notification_loop = asyncio.get_event_loop()
+        
         # Выводим информацию о настройках
         logger.info(f"Starting Telegram bot with group ID: {group}")
         logger.info(f"WB_BACKEND_URL: {WB_BACKEND_URL}")
         
-        # Запускаем бота и сервер в отдельных задачах
-        bot_task = asyncio.create_task(dp.start_polling(bot))
-        
         # Запускаем Flask в отдельном потоке
         import threading
-        flask_thread = threading.Thread(target=run_flask)
+        # Настраиваем Flask для работы с сигналами остановки
+        def run_with_shutdown():
+            try:
+                app.run(host="0.0.0.0", port=8080, threaded=True)
+            except Exception as e:
+                logger.error(f"Flask server error: {e}")
+                
+        flask_thread = threading.Thread(target=run_with_shutdown)
         flask_thread.daemon = True
         flask_thread.start()
+        logger.info("Flask server started in background thread")
         
-        # Ждем завершения задачи бота
-        await bot_task
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logger.info("Stopping bot and server...")
+        # Запускаем бота
+        logger.info("Starting Telegram bot polling")
+        await dp.start_polling(bot)
+    except (KeyboardInterrupt, asyncio.CancelledError) as e:
+        logger.info(f"Received shutdown signal: {type(e).__name__}")
     finally:
-        # Гарантируем, что бот корректно завершил работу
-        await dp.stop_polling()
+        # Корректное завершение работы
+        logger.info("Shutting down...")
+        
+        # Останавливаем бота
+        try:
+            await dp.stop_polling()
+            logger.info("Bot polling stopped")
+        except Exception as e:
+            logger.error(f"Error stopping bot: {e}")
+        
+        # Ждем завершения потока Flask
+        if flask_thread and flask_thread.is_alive():
+            logger.info("Waiting for Flask thread to terminate...")
+            flask_thread.join(timeout=3.0)  # Ждем не более 3 секунд
+            
         logger.info("Bot and server stopped")
 
 

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_BASE_URL")
+WB_BACKEND_URL = os.getenv("WB_BACKEND_URL")
 logger = logging.getLogger(__name__)
 
 
@@ -18,7 +18,7 @@ class ApiClient:
         try:
             data = {"status": status}
             logger.info(f"Updating order {order_id} status to {status}")
-            response = requests.patch(f"{API_BASE_URL}/orders/{order_id}/", json=data)
+            response = requests.patch(f"{WB_BACKEND_URL}/orders/{order_id}/", json=data)
             response.raise_for_status()
             result = response.json()
             logger.info(f"Order {order_id} status updated successfully")
