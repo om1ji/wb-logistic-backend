@@ -29,62 +29,6 @@ dp.include_router(commands.router)
 
 app = FastAPI()
 
-data = {
-    "delivery": {
-        "warehouse_id": 1,
-        "marketplace": 1
-    },
-    "cargo": {
-        "cargo_type": "pallet",
-        "container_type": "200-300 кг",
-        "box_count": 2,
-        "pallet_count": 4,
-        "dimensions": {
-            "length": "",
-            "width": "",
-            "height": "",
-            "weight": ""
-        }
-    },
-    "client": {
-        "name": "Амаль",
-        "phone": "+79273284327",
-        "company": "ИП Амаль",
-        "email": ""
-    },
-    "additional_services": [
-        1
-    ],
-    "pickup_address": "Проспект Победы 89"
-}
-
-data2 = {
-    "delivery": {
-        "warehouse_id": 1,
-        "marketplace": 1
-    },
-    "cargo": {
-        "cargo_type": "pallet",
-        "container_type": "0-200 кг",
-        "box_count": 0,
-        "pallet_count": 1,
-        "dimensions": {
-            "length": "",
-            "width": "",
-            "height": "",
-            "weight": ""
-        }
-    },
-    "client": {
-        "name": "Амаль",
-        "phone": "+79083363804",
-        "company": "ИП Амаль",
-        "email": ""
-    },
-    "additional_services": [],
-    "pickup_address": ""
-}
-
 def message_builder(order_data: Dict) -> Dict[str, Union[str, InlineKeyboardMarkup]]:
     """
     Builds a message for Telegram notification with inline keyboard
@@ -232,11 +176,19 @@ async def send_notification_endpoint(request: Request):
 
 
 async def main() -> None:
-    bot_task = asyncio.create_task(dp.start_polling(bot))
-
-    config = uvicorn.Config(app, host="0.0.0.0", port=8080)
-    server = uvicorn.Server(config)
-    await server.serve()
+    try:
+        bot_task = asyncio.create_task(dp.start_polling(bot))
+        
+        config = uvicorn.Config(app, host="0.0.0.0", port=8080)
+        server = uvicorn.Server(config)
+        server_task = asyncio.create_task(server.serve())
+        
+        await asyncio.gather(bot_task, server_task)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Stopping bot and server...")
+    finally:
+        await dp.stop_polling()
+        logger.info("Bot and server stopped")
 
 
 @app.get("/health")
