@@ -3,13 +3,12 @@ import logging
 import os
 from typing import Dict, List, Optional, Union
 
-import uvicorn
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from flask import Flask, request, jsonify
+
 from handlers import callbacks, commands
 from handlers.callbacks import router as callbacks_router
 
@@ -40,7 +39,8 @@ callbacks_router.bot = bot
 dp.include_router(callbacks_router)
 dp.include_router(commands.router)
 
-app = FastAPI()
+# Заменяем FastAPI на Flask
+app = Flask(__name__)
 
 def message_builder(order_data: Dict) -> Dict[str, Union[str, InlineKeyboardMarkup]]:
     """
@@ -177,15 +177,32 @@ async def send_notification(chat_id: Union[str, int], order_data: Dict) -> None:
         logger.error(f"Error sending notification: {e}")
 
 
-@app.post("/api/send_notification")
-async def send_notification_endpoint(request: Request):
+# Заменяем FastAPI-роут на Flask-роут
+@app.route("/api/send_notification", methods=["POST"])
+def send_notification_endpoint():
     try:
-        order_data = await request.json()
-        await send_notification(group, order_data)
-        return {"status": "success"}
+        order_data = request.json
+        
+        # Создаем новый event loop для асинхронного вызова из синхронного кода Flask
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_notification(group, order_data))
+        
+        return jsonify({"status": "success"})
     except Exception as e:
         logging.error(f"Error sending notification: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# Заменяем FastAPI health check на Flask-роут
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok"})
+
+
+# Функция запуска Flask-сервера в отдельном потоке
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
 
 
 async def main() -> None:
@@ -197,23 +214,20 @@ async def main() -> None:
         # Запускаем бота и сервер в отдельных задачах
         bot_task = asyncio.create_task(dp.start_polling(bot))
         
-        config = uvicorn.Config(app, host="0.0.0.0", port=8080)
-        server = uvicorn.Server(config)
-        server_task = asyncio.create_task(server.serve())
+        # Запускаем Flask в отдельном потоке
+        import threading
+        flask_thread = threading.Thread(target=run_flask)
+        flask_thread.daemon = True
+        flask_thread.start()
         
-        # Ждем завершения любой из задач или сигнала прерывания
-        await asyncio.gather(bot_task, server_task)
+        # Ждем завершения задачи бота
+        await bot_task
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Stopping bot and server...")
     finally:
         # Гарантируем, что бот корректно завершил работу
         await dp.stop_polling()
         logger.info("Bot and server stopped")
-
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
 
 
 if __name__ == "__main__":
