@@ -133,8 +133,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 phone_number=client_data.get("phone", ""),
                 company=client_data.get("company", ""),
                 email=client_data.get("email", ""),
+                telegram_user_id=client_data.get("user_id"),
                 pickup_address=pickup_address,
-                status="new"
+                status="new",
             )
 
             # Сохраняем размеры и вес если они есть
@@ -179,7 +180,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "client_name": order.client_name,
                 "client_email": order.email,
                 "client_phone": order.phone_number,
-                "telegram_user_id": client_data.get("telegram_user_id"),
+                "telegram_user_id": order.telegram_user_id,
                 "cost": str(order.total_price),
                 "pickup_address": order.pickup_address or "Не указан",
                 "comments": client_data.get("comments", "Нет комментариев"),
@@ -234,7 +235,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                             "name": order.client_name,
                             "phone": order.phone_number,
                             "company": order.company,
-                            "email": order.email
+                            "email": order.email,
+                            "telegram_user_id": order.telegram_user_id
                         },
                         "cargo": {
                             "type": order.cargo_type,
@@ -338,8 +340,8 @@ class OrderViewSet(viewsets.ModelViewSet):
             order.status = 'accepted'
             order.save()
             
-            # Отправляем уведомление в Telegram
-            telegram_data = {
+            # Отправляем уведомление в Telegram для админов
+            telegram_admin_data = {
                 "order_id": str(order.id),
                 "sequence_number": order.sequence_number,
                 "driver_name": driver.full_name,
@@ -350,11 +352,34 @@ class OrderViewSet(viewsets.ModelViewSet):
             try:
                 response = requests.post(
                     f"{TELEGRAM_BOT_URL}/api/send_notification",
-                    json=telegram_data
+                    json=telegram_admin_data
                 )
-                logger.info(f"Telegram notification sent: {response.json()}")
+                logger.info(f"Telegram admin notification sent: {response.json()}")
             except Exception as e:
-                logger.error(f"Error sending Telegram notification: {str(e)}")
+                logger.error(f"Error sending Telegram admin notification: {str(e)}")
+                
+            # Отправляем уведомление клиенту если у заказа есть telegram_user_id
+            if order.telegram_user_id:
+                logger.info(f"Sending notification to user with telegram_user_id: {order.telegram_user_id}")
+                telegram_user_data = {
+                    "telegram_user_id": order.telegram_user_id,
+                    "notification_type": "order_accepted",
+                    "driver_name": driver.full_name,
+                    "driver_phone": driver.phone,
+                    "truck_info": f"{truck.brand} {truck.plate_number}",
+                    "sequence_number": order.sequence_number
+                }
+                
+                try:
+                    response = requests.post(
+                        f"{TELEGRAM_BOT_URL}/api/send_user_notification",
+                        json=telegram_user_data
+                    )
+                    logger.info(f"Telegram user notification sent: {response.json()}")
+                except Exception as e:
+                    logger.error(f"Error sending Telegram user notification: {str(e)}")
+            else:
+                logger.warning(f"Order {order.id} has no telegram_user_id, skipping user notification")
             
             return Response({
                 'success': True,
@@ -788,8 +813,12 @@ def create_order(request):
             company=client_data.get("company", ""),
             email=client_data.get("email", ""),
             pickup_address=pickup_address,
-            status="new"
+            status="new",
+            telegram_user_id=client_data.get("user_id")
         )
+
+        # Добавляем дополнительное логирование для проверки telegram_user_id
+        logger.info(f"Creating order with telegram_user_id: {order.telegram_user_id}, from client data: {client_data}")
 
         # Сохраняем размеры и вес если они есть
         dimensions = cargo_data.get("dimensions", {})
@@ -833,7 +862,7 @@ def create_order(request):
             "client_name": order.client_name,
             "client_email": order.email,
             "client_phone": order.phone_number,
-            "telegram_user_id": client_data.get("telegram_user_id"),
+            "telegram_user_id": order.telegram_user_id,
             "cost": str(order.total_price),
             "pickup_address": order.pickup_address or "Не указан",
             "comments": client_data.get("comments", "Нет комментариев"),
@@ -1052,5 +1081,112 @@ def assign_driver(request, order_id):
         logger.error(f"Error assigning driver to order: {e}")
         return Response(
             {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+def reject_order(request, order_id):
+    """
+    Отклоняет заказ, изменяя его статус на "rejected"
+    
+    Args:
+        request: HTTP запрос
+        order_id: ID заказа
+        
+    Returns:
+        Response: JSON ответ с результатом операции
+    """
+    try:
+        # Получаем заказ по ID
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response(
+                {"error": "Order not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        # Получаем причину отклонения, если она указана
+        rejection_data = request.data
+        reason = rejection_data.get("reason", "")
+        
+        # Обновляем статус заказа
+        order.status = "rejected"
+        
+        # Сохраняем причину отклонения, если она указана
+        if reason:
+            if not order.additional_info:
+                order.additional_info = {}
+            
+            if isinstance(order.additional_info, dict):
+                order.additional_info["rejection_reason"] = reason
+            else:
+                # Если additional_info не словарь, создаем новый словарь
+                order.additional_info = {"rejection_reason": reason}
+        
+        # Сохраняем изменения
+        order.save()
+        
+        logger.info(f"Order {order_id} rejected successfully")
+        
+        return Response(
+            {
+                "status": "success",
+                "message": "Order rejected successfully",
+                "order_id": str(order.id),
+                "rejected_at": timezone.now()
+            },
+            status=status.HTTP_200_OK
+        )
+    except Exception as e:
+        logger.error(f"Error rejecting order {order_id}: {str(e)}")
+        return Response(
+            {"error": f"Failed to reject order: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(["GET"])
+def get_service_names(request):
+    """
+    Возвращает информацию о дополнительных услугах по их ID
+    
+    Query params:
+        ids: список ID услуг через запятую (например: ?ids=1,2,3)
+        
+    Returns:
+        Словарь с ID услуги в качестве ключа и названием услуги в качестве значения
+    """
+    try:
+        # Получаем список ID услуг из параметров запроса
+        ids_param = request.GET.get("ids", "")
+        if not ids_param:
+            return Response(
+                {"error": "Missing ids parameter"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        # Преобразуем строку с ID в список
+        try:
+            ids = [int(id_str) for id_str in ids_param.split(",") if id_str.strip()]
+        except ValueError:
+            return Response(
+                {"error": "Invalid ids format. Should be comma-separated integers"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        # Получаем услуги по ID
+        services = AdditionalService.objects.filter(id__in=ids)
+        
+        # Формируем словарь {id: name}
+        service_dict = {str(service.id): {"name": service.name, "price": float(service.price)} for service in services}
+        
+        return Response(service_dict, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error getting service names: {str(e)}")
+        return Response(
+            {"error": f"Failed to get service names: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )

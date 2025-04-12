@@ -9,6 +9,8 @@ from .views import (
     DriverViewSet,
     TruckViewSet,
     assign_driver,
+    reject_order,
+    get_service_names,
 )
 
 app_name = "orders"
@@ -40,6 +42,7 @@ urlpatterns = [
     # Маршруты для водителей и грузовиков в отдельном пространстве
     path('transport/', include(driver_router.urls)),
     path('<uuid:order_id>/assign_driver/', assign_driver, name='assign-driver'),
+    path('<uuid:order_id>/reject/', reject_order, name='reject-order'),
     path(
         "warehouses/",
         views.WarehouseViewSet.as_view({"get": "list"}),
@@ -94,6 +97,7 @@ urlpatterns = [
         ),
         name="service-detail",
     ),
+    path("services/names/", get_service_names, name="service-names"),
     path("test-pricing/", test_pricing, name="test-pricing"),
     path(
         "send-telegram-notification/",

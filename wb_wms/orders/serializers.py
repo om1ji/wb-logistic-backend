@@ -67,27 +67,57 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_containers_info(self, obj):
         if isinstance(obj, Order):
-            return [
-                {
-                    "type": container.container_type,
-                    "size": (
-                        container.box_size
-                        if container.container_type == "Коробка"
-                        else container.pallet_weight
-                    ),
-                    "quantity": container.quantity,
-                }
-                for container in obj.containers.all()
-            ]
+            try:
+                return [
+                    {
+                        "type": container.container_type,
+                        "size": (
+                            container.box_size
+                            if container.container_type == "Коробка"
+                            else container.pallet_weight
+                        ),
+                        "quantity": container.quantity,
+                    }
+                    for container in obj.containers.all()
+                ]
+            except AttributeError:
+                # Обрабатываем случай, когда containers не существует
+                # Возвращаем информацию на основе box_count и pallet_count
+                containers_info = []
+                if obj.box_count and obj.box_count > 0:
+                    containers_info.append({
+                        "type": "Коробка",
+                        "size": obj.container_type if obj.cargo_type == "box" else "",
+                        "quantity": obj.box_count
+                    })
+                if obj.pallet_count and obj.pallet_count > 0:
+                    containers_info.append({
+                        "type": "Паллета",
+                        "size": obj.container_type if obj.cargo_type == "pallet" else "",
+                        "quantity": obj.pallet_count
+                    })
+                return containers_info
         return []
 
     def get_client_info(self, obj):
         if isinstance(obj, Order):
+            try:
+                if hasattr(obj, "user_id") and obj.user_id:
+                    return {
+                        "company_name": obj.user_id.company_name,
+                        "client_name": obj.user_id.username,
+                        "email": obj.user_id.email,
+                        "phone": obj.user_id.phone,
+                    }
+            except Exception:
+                pass
+            
+            # Если user_id не существует или произошла ошибка, используем прямые поля заказа
             return {
-                "company_name": obj.user_id.company_name,
-                "client_name": obj.user_id.username,
-                "email": obj.user_id.email,
-                "phone": obj.user_id.phone,
+                "company_name": obj.company or "",
+                "client_name": obj.client_name or "",
+                "email": obj.email or "",
+                "phone": obj.phone_number or "",
             }
         return {}
 
@@ -283,7 +313,11 @@ class OrderSerializer(serializers.ModelSerializer):
                 company=client_data.get("company", ""),
                 email=client_data.get("email", ""),
                 pickup_address=pickup_address,
+                telegram_user_id=client_data.get("user_id")
             )
+            
+            # Логируем данные для отладки
+            print(f"Creating order with telegram_user_id: {order.telegram_user_id}, from client data: {client_data}")
 
             # 6. Добавляем дополнительные услуги, если они есть
             if additional_services:
