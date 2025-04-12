@@ -7,6 +7,12 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - DEBUG=${DEBUG}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+      - POSTGRES_DB=wb_wms
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+    restart: unless-stopped
     depends_on:
       - db
     networks:
@@ -28,6 +34,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
       - WB_BACKEND_URL=http://web-app:8000
+    restart: unless-stopped
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -47,6 +54,7 @@ services:
       - POSTGRES_PASSWORD=postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data/
+    restart: unless-stopped
     networks:
       - app-network
     healthcheck:
@@ -60,4 +68,5 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data: 
+  postgres_data:
+    name: wb_bot_postgres_data 
